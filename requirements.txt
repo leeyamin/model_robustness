@@ -1,0 +1,10 @@
+numpy
+pandas
+nltk
+python-dotenv
+langchain-community
+langchain-core
+sentence-transformers
+scikit-learn
+ctransformers
+torch 
