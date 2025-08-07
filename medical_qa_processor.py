@@ -1,458 +1,384 @@
 import os
 import re
-import json
 import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
-from typing import List, Dict, Tuple, Optional
+from typing import Tuple, List, Dict
 import argparse
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-class MedicalQASummarizer:
-    """A class to process and summarize medical Q&A pairs into concise question-answer format."""
-    
-    def __init__(self, max_words: int = 40, min_sentence_length: int = 5):
-        """
-        Initialize the summarizer.
-        
-        Args:
-            max_words: Maximum number of words for the summary
-            min_sentence_length: Minimum length of a sentence to be included
-        """
-        self.max_words = max_words
-        self.min_sentence_length = min_sentence_length
-        self.greetings = {'hi', 'hello', 'dear', 'thanks', 'thank you', 'regards', 'sincerely', 'best', 'warm'}
-        self.key_terms = {
-            # Action terms
-            'should', 'recommend', 'advise', 'suggest', 'take', 'use', 'avoid', 'consider', 'try',
-            'important', 'necessary', 'required', 'need', 'must', 'essential', 'typically', 'usually',
-            'often', 'commonly', 'frequently', 'prescribe', 'prescription', 'treatment', 'therapy',
-            # Medical terms
-            'cause', 'causes', 'caused', 'due to', 'because of', 'result from', 'lead to', 'leads to',
-            'symptom', 'symptoms', 'sign', 'signs', 'indication', 'indications', 'manifest', 'manifestation',
-            'diagnose', 'diagnosis', 'diagnosed', 'identify', 'identification', 'test', 'testing',
-            'treat', 'treatment', 'therapy', 'therapies', 'medication', 'medications', 'medicine', 'medicines',
-            'drug', 'drugs', 'prescription', 'prescriptions', 'dose', 'dosage', 'dosages', 'mg', 'ml',
-            'prevent', 'prevention', 'preventive', 'avoid', 'avoiding', 'reduction', 'reduce', 'reducing',
-            'risk', 'risks', 'factor', 'factors', 'complication', 'complications', 'side effect', 'side effects',
-            # Time-related terms
-            'acute', 'chronic', 'sudden', 'gradual', 'immediate', 'delayed', 'prolonged', 'temporary', 'permanent',
-            # Severity terms
-            'mild', 'moderate', 'severe', 'critical', 'serious', 'minor', 'major', 'life-threatening', 'fatal',
-            # Location terms
-            'localized', 'generalized', 'systemic', 'bilateral', 'unilateral', 'left', 'right', 'upper', 'lower'
-        }
-    
-    def clean_text(self, text: str) -> str:
-        """Clean and preprocess the text, removing personal references and greetings."""
-        if not isinstance(text, str):
-            return ""
-        
-        text = ' '.join(text.split())  # Remove extra whitespace
-        text = re.sub(r'https?://\S+|www\.\S+', '', text)  # Remove URLs
-        text = re.sub(r'<.*?>', '', text)  # Remove HTML tags
-        text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
-        
-        text = re.split(r'(?i)(?:sincerely|best regards|regards|thank you|thanks)[,.]', text)[0]
-        
-        text = re.sub(r'\b(I|me|my|mine|myself|you|your|yours|yourself|yourselves)\b', '', text, flags=re.IGNORECASE)
-        
-        text = re.sub(r'^\s*(hi|hello|dear|hey)[,.!\s]*', '', text, flags=re.IGNORECASE)
-        
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
-    
-    def is_greeting_or_signoff(self, sentence: str) -> bool:
-        """Check if a sentence is a greeting, sign-off, or contains personal references."""
-        if not sentence.strip():
-            return True
-            
-        sentence_lower = sentence.lower()
-        words = sentence_lower.split()
-        
-        if len(words) < 3:
-            return True
-            
-        greeting_phrases = [
-            'best regards', 'sincerely', 'thank you', 'thanks', 'hope this helps',
-            'take care', 'let me know', 'feel free', 'for more information',
-            'consult a', 'see a', 'visit a', 'contact your', 'dear', 'hi ', 'hello ',
-            'warm regards', 'kind regards', 'yours sincerely', 'yours truly'
+def remove_greetings_and_closings(text: str, greeting_terms: List[str] = None) -> str:
+    """
+    Remove greeting and closing terms from text without modifying the medical content.
+    Only removes exact matches of specified terms (case-insensitive).
+    """
+    if greeting_terms is None:
+        greeting_terms = [
+            'hi', 'hello', 'hey', 'dear', 'thanks', 'thank you',
+            'regards', 'sincerely', 'best wishes', 'goodbye', 'bye',
+            'welcome', 'greetings', '-->', 'good morning', 'good afternoon',
+            'good evening', 'have a good day'
         ]
+    
+    # Convert text to lowercase for case-insensitive matching
+    text_lower = text.lower()
+    words = text.split()
+    words_lower = text_lower.split()
+    
+    # Only remove words that exactly match greeting terms
+    filtered_words = []
+    for i, (word, word_lower) in enumerate(zip(words, words_lower)):
+        # Check if this word or next few words form a greeting term
+        is_greeting = False
+        for term in greeting_terms:
+            term_len = len(term.split())
+            if i <= len(words) - term_len:
+                phrase = ' '.join(words_lower[i:i+term_len])
+                if phrase == term:
+                    is_greeting = True
+                    break
         
-        if any(phrase in sentence_lower for phrase in greeting_phrases):
-            return True
+        if not is_greeting:
+            filtered_words.append(word)
+    
+    return ' '.join(filtered_words).strip()
+
+def is_referral_only(answer: str) -> bool:
+    """
+    Check if the answer is just a referral without any medical information.
+    """
+    # Common referral patterns
+    referral_patterns = [
+        r"(?i)consult.*online",
+        r"(?i)please.*consult",
+        r"(?i)visit.*doctor",
+        r"(?i)see.*specialist",
+    ]
+    
+    # Check if answer matches any referral pattern
+    is_referral = any(re.search(pattern, answer) for pattern in referral_patterns)
+    
+    # Check if answer contains any medical terms or information
+    words = set(answer.lower().split())
+    # Remove common stop words and greetings
+    stop_words = {"hi", "hello", "please", "thank", "thanks", "regards", "sincerely", "for", "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "of"}
+    content_words = words - stop_words
+    
+    # If it's just a referral and has very few content words, consider it referral-only
+    return is_referral and len(content_words) < 5
+
+def clean_text(text: str) -> str:
+    """
+    Clean text by fixing common typos and formatting issues.
+    """
+    # Common typo corrections
+    typo_fixes = {
+        'ypu': 'you',
+        'acud': 'acid',
+        'aluke': 'like',
+        'He ce': 'Hence',
+        'threatns': 'threatens',
+        'differed': 'suffered',
+        ' i ': ' I ',
+        'with in': 'within',
+    }
+    
+    # Fix typos
+    for typo, fix in typo_fixes.items():
+        text = re.sub(rf'\b{typo}\b', fix, text, flags=re.IGNORECASE)
+    
+    # Fix spacing issues
+    text = re.sub(r'\s+', ' ', text)  # Replace multiple spaces with single space
+    text = re.sub(r'\s*\.\s*', '. ', text)  # Fix spacing around periods
+    text = re.sub(r'\s*,\s*', ', ', text)  # Fix spacing around commas
+    
+    # Remove any added prefixes/labels that weren't in original text
+    text = re.sub(r'^(?:Doctor\'s Answer:|Answer:|Response:|Medical Advice:)\s*', '', text, flags=re.IGNORECASE)
+    
+    return text.strip()
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize text for comparison by removing punctuation and extra whitespace.
+    """
+    # Remove punctuation except hyphens in medical terms
+    text = re.sub(r'[^\w\s-]', ' ', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text.lower().strip()
+
+def verify_no_added_content(original: str, summary: str) -> bool:
+    """
+    Verify that the summary doesn't contain any medical terms or key phrases that weren't in the original text.
+    Returns True if the summary is valid (no new content), False otherwise.
+    """
+    # Normalize texts for comparison
+    original_norm = normalize_text(original)
+    summary_norm = normalize_text(summary)
+    
+    # Extract medical terms and key phrases from both texts
+    def extract_terms(text):
+        # Find all words that might be medical terms (longer words, often with specific endings)
+        potential_terms = re.findall(r'\b[a-z]+(?:itis|osis|emia|opathy|ectomy|plasty|therapy|tomy|scopy|gram)\b', text)
+        
+        # Find all words that might be medical terms (based on length and uniqueness)
+        words = re.findall(r'\b[a-z]{7,}\b', text)
+        potential_terms.extend(words)
+        
+        # Find all numbers with units
+        measurements = re.findall(r'\d+(?:\.\d+)?\s*(?:mg|g|ml|l|cm|mm|hours?|days?|weeks?|months?)', text)
+        
+        # Get all words for sliding window analysis
+        all_words = text.split()
+        
+        # Use sliding windows of 2-4 words to catch phrases
+        phrases = []
+        for window_size in range(2, 5):
+            for i in range(len(all_words) - window_size + 1):
+                phrase = ' '.join(all_words[i:i + window_size])
+                # Only keep phrases that look like medical terms or important statements
+                if (any(len(word) > 6 for word in phrase.split()) or  # Has long words
+                    re.search(r'\b(?:treatment|symptom|condition|diagnosis|therapy|medicine|disease|infection|surgery)\b', phrase, re.IGNORECASE)):
+                    phrases.append(phrase)
+        
+        return set(potential_terms + measurements + phrases)
+    
+    original_terms = extract_terms(original_norm)
+    summary_terms = extract_terms(summary_norm)
+    
+    # Check if summary contains any terms not in original
+    new_terms = set()
+    for term in summary_terms:
+        # Skip very common phrases
+        if term in {'there are', 'this is', 'it is', 'you are', 'will be', 'can be', 'has been'}:
+            continue
             
-        personal_pronouns = ['i ', 'me ', 'my ', 'mine', 'myself', 'you ', 'your', 'yours', 'yourself']
-        if any(pronoun in sentence_lower for pronoun in personal_pronouns):
-            return True
-            
-        if '?' in sentence:
-            return True
-            
+        # Normalize the term
+        term_norm = normalize_text(term)
+        
+        # For longer phrases, check if all words appear in original in any order
+        if len(term.split()) > 2:
+            term_words = set(term.split())
+            if all(word in original_norm.split() for word in term_words):
+                continue
+                
+        # If term isn't in original and isn't a subset of any original term
+        if term_norm not in original_norm and not any(term_norm in normalize_text(orig_term) for orig_term in original_terms):
+            # Double check by looking for the term's words in sequence
+            term_words = term_norm.split()
+            found = False
+            for i in range(len(original_norm.split()) - len(term_words) + 1):
+                if ' '.join(original_norm.split()[i:i + len(term_words)]) == ' '.join(term_words):
+                    found = True
+                    break
+            if not found:
+                new_terms.add(term)
+    
+    if new_terms:
+        print(f"Found new terms in summary that weren't in original: {new_terms}")
         return False
     
-    def score_sentence(self, sentence: str) -> int:
-        """Score a sentence based on its content and relevance."""
-        if not sentence.strip():
-            return -1
-            
-        score = 0
-        words = sentence.lower().split()
-        sentence_lower = sentence.lower()
-        
-        score += sum(1 for term in self.key_terms if term in sentence_lower)
-        
-        word_count = len(words)
-        if 8 <= word_count <= 25:
-            score += 2
-        elif 4 <= word_count <= 7 or 26 <= word_count <= 35:
-            score += 1
-            
-        if word_count < 3 or word_count > 50:
-            score -= 2
-            
-        if sentence.count(',') > 3 or sentence.count(';') > 1:
-            score -= 1
-            
-        if 'http' in sentence_lower or '@' in sentence_lower:
-            score -= 2
-            
-        return score
-    
-    def generate_summary(self, text: str) -> str:
-        """Generate a meaningful summary from the given text."""
-        if not text:
-            return ""
-            
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        
-        filtered_sentences = [
-            s for s in sentences 
-            if not self.is_greeting_or_signoff(s) and 
-               len(s.split()) >= self.min_sentence_length
-        ]
-        
-        if not filtered_sentences:
-            filtered_sentences = sentences
-        
-        scored_sentences = [(s, self.score_sentence(s)) for s in filtered_sentences]
-        scored_sentences.sort(key=lambda x: x[1], reverse=True)
-        
-        summary = []
-        word_count = 0
-        
-        for sentence, score in scored_sentences:
-            words = sentence.split()
-            if word_count + len(words) <= self.max_words:
-                summary.append(sentence)
-                word_count += len(words)
-            else:
-                remaining = self.max_words - word_count
-                if remaining >= 3:
-                    partial = ' '.join(words[:remaining]) + '...'
-                    summary.append(partial)
-                break
-        
-        if not summary and sentences:
-            first_sentence = sentences[0]
-            words = first_sentence.split()
-            return ' '.join(words[:min(len(words), self.max_words)]) + ('...' if len(words) > self.max_words else '')
-        
-        return ' '.join(summary)
-    
-    def extract_key_information(self, description: str, doctor_response: str) -> str:
-        """
-        Extract key information from the doctor's response that is relevant to the description.
-        Returns a neutral, concise answer based on the doctor's literal response.
-        
-        Args:
-            description: The concise description of the question
-            doctor_response: The doctor's full response
-            
-        Returns:
-            str: A concise, neutral answer based on the doctor's response
-        """
-        if not doctor_response or not description:
-            return ""
-            
-        clean_description = self.clean_text(description)
-        
-        doc_response_cleaned = ' '.join(doctor_response.split())
-        doc_response_cleaned = re.sub(r'https?://\S+|www\.\S+', '', doc_response_cleaned)
-        doc_response_cleaned = re.sub(r'<.*?>', '', doc_response_cleaned)
-        
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', doc_response_cleaned)]
-        
-        prepped_sentences = []
-        for sentence in sentences:
-            if self.is_greeting_or_signoff(sentence) or len(sentence.split()) < self.min_sentence_length:
-                continue
-            
-            cleaned_sentence = re.sub(r'\b(I|me|my|mine|myself|you|your|yours|yourself|yourselves)\b', '', sentence, flags=re.IGNORECASE)
-            cleaned_sentence = re.sub(r'\s+', ' ', cleaned_sentence).strip()
-            
-            if cleaned_sentence:
-                prepped_sentences.append(cleaned_sentence)
+    return True
 
-        if not prepped_sentences:
-            return ""
-            
-        question_type = self._identify_question_type(clean_description)
-        
-        scored_sentences = [
-            (s, self._calculate_relevance_score(s, clean_description, question_type)) 
-            for s in prepped_sentences
-        ]
-        
-        scored_sentences.sort(key=lambda x: x[1], reverse=True)
-        
-        answer_parts = []
-        word_count = 0
-        
-        for sentence, score in scored_sentences:
-            if score <= 0:
-                continue
-
-            words = sentence.split()
-            if word_count + len(words) <= self.max_words:
-                answer_parts.append(sentence)
-                word_count += len(words)
-            elif not answer_parts:
-                answer_parts.append(' '.join(words[:self.max_words]) + '...')
-                break
-        
-        if not answer_parts and prepped_sentences:
-            first_sentence = prepped_sentences[0]
-            words = first_sentence.split()
-            result = ' '.join(words[:min(len(words), self.max_words)])
-            if len(words) > self.max_words:
-                result += '...'
-            return self._clean_answer(result)
-            
-        answer = ' '.join(answer_parts)
-        return self._clean_answer(answer)
-
-    def _identify_question_type(self, description: str) -> str:
-        """Identify the type of question based on the description."""
-        description = description.lower()
-        if any(word in description for word in ['what cause', 'what causes', 'why do', 'why does']):
-            return 'cause'
-        elif any(word in description for word in ['what are the symptom', 'what are the sign']):
-            return 'symptoms'
-        elif any(word in description for word in ['how to treat', 'what is the treatment', 'how is it treated']):
-            return 'treatment'
-        elif any(word in description for word in ['how to prevent', 'how can i prevent']):
-            return 'prevention'
-        elif any(word in description for word in ['what is', 'what are', 'define']):
-            return 'definition'
-        return 'general'
-
-    def _calculate_relevance_score(self, sentence: str, description: str, question_type: str) -> float:
-        """Calculate how relevant a sentence is to the question and its type."""
-        sentence_lower = sentence.lower()
-        score = 0.0
-        
-        score += sum(0.5 for term in self.key_terms if term in sentence_lower)
-        
-        description_terms = set(description.lower().split())
-        sentence_terms = set(sentence_lower.split())
-        common_terms = description_terms.intersection(sentence_terms)
-        score += len(common_terms) * 0.5  # Boost for each matching term
-        
-        if question_type == 'cause' and ('cause' in sentence_lower or 'due to' in sentence_lower):
-            score += 2
-        elif question_type == 'symptoms' and ('symptom' in sentence_lower or 'sign' in sentence_lower):
-            score += 2
-        elif question_type == 'treatment' and ('treat' in sentence_lower or 'therapy' in sentence_lower or 'medication' in sentence_lower):
-            score += 2
-        elif question_type == 'prevention' and ('prevent' in sentence_lower or 'avoid' in sentence_lower):
-            score += 2
-            
-        word_count = len(sentence_lower.split())
-        if word_count < 3 or word_count > 30:
-            score -= 1
-            
-        return max(0, score)
-    
-    def _clean_answer(self, answer: str) -> str:
-        """Clean up the final answer."""
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', answer)]
-        cleaned_sentences = [s for s in sentences if not self.is_greeting_or_signoff(s)]
-        
-        if not cleaned_sentences:
-            return answer
-            
-        result = ' '.join(cleaned_sentences)
-        result = re.sub(r'\s+', ' ', result).strip()
-        
-        if result and not result.endswith(('.', '!', '?')):
-            result += '.'
-            
-        return result
-    
-    def generate_answer(self, description: str, doctor_response: str) -> str:
-        """
-        Generate a concise answer from the doctor's response based on the description.
-        
-        Args:
-            description: The concise description of the question
-            doctor_response: The doctor's full response
-            
-        Returns:
-            str: A concise answer
-        """
-        try:
-            answer = self.extract_key_information(description, doctor_response)
-            
-            if not answer:
-                return "[No answer could be generated]"
-                
-            return answer.strip()
-            
-        except Exception as e:
-            print(f"Error generating answer: {e}")
-            return "[Error generating answer]"
-
-def process_batch(
-    dataset,
-    processor: MedicalQASummarizer,
-    start_idx: int,
-    batch_size: int,
-    output_dir: str,
-    batch_num: int
-) -> Tuple[pd.DataFrame, str]:
+def generate_concise_answer(summarizer, question: str, full_answer: str) -> str:
     """
-    Process a batch of the dataset.
+    Generate a concise answer from the doctor's full response using a summarization model.
+    Ensures the summary contains only information present in the original answer.
+    """
+    # Clean the input text first
+    full_answer = clean_text(full_answer)
+    
+    # If the answer is too short or just a referral, return None to skip it
+    if len(full_answer.split()) < 10 or is_referral_only(full_answer):
+        print(f"\nSkipping answer as it's too short or referral-only:")
+        print(f"Question: {question}")
+        print(f"Answer: {full_answer}")
+        return None
+        
+    prompt = f"""Summarize this medical response, focusing ONLY on medical information, advice, and recommendations:
+
+Question: {question}
+Doctor's Answer: {full_answer}
+
+Guidelines:
+- Keep ALL medical terms, conditions, symptoms, and treatments EXACTLY as they appear
+- Keep ALL specific recommendations and dosages EXACTLY as they appear
+- Remove greetings, pleasantries, and non-medical content
+- Make it direct and concise while preserving medical accuracy
+- Start with the most important medical information
+- Ensure all sentences are complete and end with proper punctuation
+- Do not cut off sentences in the middle
+- Keep the most relevant medical information for the question asked
+- Do not add ANY new information that wasn't in the original text
+- Do not add ANY labels or prefixes to the text"""
+
+    try:
+        # Calculate dynamic max_length based on input length, but ensure enough room for complete sentences
+        input_length = len(full_answer.split())
+        max_length = min(max(input_length * 2 // 3, 40), 175)  # Adjusted min and max lengths
+        min_length = min(max(input_length // 3, 25), 125)  # Adjusted min length
+        
+        print(f"\nProcessing QA pair:")
+        print(f"Question: {question}")
+        print(f"Original answer length: {len(full_answer.split())} words")
+        print(f"Target summary length: {min_length}-{max_length} words")
+        
+        # Generate summary with more beams for better sentence completion
+        summary = summarizer(
+            prompt, 
+            max_length=max_length, 
+            min_length=min_length, 
+            do_sample=False,
+            num_beams=5,  # Increased beam search
+            length_penalty=2.0,  # Encourage longer summaries that complete thoughts
+            early_stopping=True,
+            repetition_penalty=2.5  # Discourage repetition
+        )
+        concise_answer = clean_text(summary[0]['summary_text'])
+        
+        # Verify the summary is not just repeating instructions
+        if any(phrase in concise_answer.lower() for phrase in [
+            "keep all medical terms",
+            "remove greetings",
+            "remove any greetings",
+            "guidelines",
+            "summarize this",
+            "medical information",
+            "medical response",
+            "doctor's answer",
+            "original text"
+        ]):
+            print("Summary contained instruction text, skipping...")
+            return None
+            
+        # Ensure the summary ends with a complete sentence
+        if not concise_answer[-1] in '.!?':
+            # Try to find the last complete sentence
+            sentences = re.split(r'(?<=[.!?])\s+', concise_answer)
+            if sentences:
+                concise_answer = ' '.join(sentences[:-1] if len(sentences) > 1 else sentences)
+                if not concise_answer[-1] in '.!?':
+                    concise_answer = concise_answer.rstrip(',:;') + '.'
+        
+        # Verify we have actual content after cleaning
+        if len(concise_answer.split()) < min(20, min_length):  # More lenient minimum length
+            print("Summary too short after cleaning, skipping...")
+            return None
+            
+        # Verify no new content was added
+        if not verify_no_added_content(full_answer, concise_answer):
+            print("Summary contained new content not present in original, skipping...")
+            return None
+        
+        print(f"Generated summary length: {len(concise_answer.split())} words")
+        print(f"Original answer: {full_answer}")
+        print(f"Concise answer: {concise_answer}\n")
+        
+        return concise_answer
+    except Exception as e:
+        print(f"Error generating concise answer: {str(e)}")
+        return None  # Return None if summarization fails
+
+def clean_question_text(text: str) -> str:
+    """
+    Clean question text by removing the Q. prefix and any leading/trailing whitespace.
+    """
+    # Remove 'Q.' prefix if present
+    text = re.sub(r'^Q\.\s*', '', text.strip())
+    return text.strip()
+
+def process_medical_qa(
+    dataset,
+    model_name: str = "facebook/bart-large-cnn",
+    output_dir: str = "data/processed/medical_qa",
+    batch_size: int = 10
+) -> pd.DataFrame:
+    """
+    Process the medical QA dataset according to specifications:
+    1. Keep description as question (removing Q. prefix)
+    2. Keep original doctor's answer
+    3. Remove referral-only answers
+    4. Clean greetings/closings from answers
+    5. Generate concise answers
     
     Args:
         dataset: The dataset to process
-        processor: The MedicalQASummarizer instance
-        start_idx: Starting index in the dataset
-        batch_size: Number of samples to process
+        model_name: Name of the model to use for generating concise answers
         output_dir: Directory to save results
-        batch_num: Batch number for logging
-        
+        batch_size: Batch size for processing
+    
     Returns:
-        Tuple containing the processed DataFrame and output file path
+        DataFrame with processed QA pairs
     """
-    end_idx = min(start_idx + batch_size, len(dataset))
-    batch_results = []
+    print("Loading summarization model...")
+    summarizer = pipeline("summarization", model=model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device set to use {device}")
     
-    image_keywords = re.compile(r'image|photo|picture|attachment|attached|view the', re.IGNORECASE)
+    processed_data = []
     
-    for idx in range(start_idx, end_idx):
-        try:
-            item = dataset[idx]
+    # Process in batches
+    for i in tqdm(range(0, len(dataset), batch_size), desc="Processing QA pairs"):
+        batch = dataset[i:i + batch_size]
+        
+        for item in zip(batch['Description'], batch['Doctor']):
+            question = clean_question_text(item[0])
+            answer = item[1].strip()
             
-            description = item.get('Description', '')
-            patient_query = item.get('Patient', '')
-            doctor_response = item.get('Doctor', '')
+            # Generate concise answer
+            concise_answer = generate_concise_answer(summarizer, question, answer)
             
-            if image_keywords.search(patient_query) or image_keywords.search(doctor_response):
-                continue
-            
-            answer = processor.generate_answer(
-                description=description,
-                doctor_response=doctor_response
-            )
-            
-            question = re.sub(r'^Q\.\s*', '', description).strip()
-            
-            result = {
-                'question': question,
-                'patient_query': patient_query,
-                'doctor_response': doctor_response,
-                'concise_answer': answer,
-            }
-            
-            batch_results.append(result)
-            
-        except Exception as e:
-            print(f"Error processing sample {idx}: {str(e)}")
-            continue
+            # Only keep pairs where we successfully generated a concise answer
+            if concise_answer is not None:
+                processed_data.append({
+                    'question': question,
+                    'original_answer': answer,
+                    'concise_answer': concise_answer
+                })
     
-    df = pd.DataFrame(batch_results)
+    # Convert to DataFrame
+    df = pd.DataFrame(processed_data)
     
+    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f'medical_qa_batch_{batch_num:03d}.csv')
     
+    # Save to CSV
+    output_file = os.path.join(output_dir, 'medical_qa_processed.csv')
     df.to_csv(output_file, index=False)
     
-    return df, output_file
+    print("\nProcessing complete!")
+    print(f"Original dataset size: {len(dataset)}")
+    print(f"Processed QA pairs: {len(df)}")
+    print(f"Results saved to: {output_file}")
+    
+    return df
 
 def main():
-    parser = argparse.ArgumentParser(description='Process medical Q&A dataset and generate concise answers.')
+    parser = argparse.ArgumentParser(description='Process medical Q&A dataset.')
     parser.add_argument('--output-dir', type=str, default='data/processed/medical_qa',
                         help='Directory to save processed data')
-    parser.add_argument('--batch-size', type=int, default=100,
+    parser.add_argument('--batch-size', type=int, default=10,
                         help='Number of samples to process in each batch')
-    parser.add_argument('--max-words', type=int, default=40,
-                        help='Maximum number of words in the summary')
+    parser.add_argument('--model-name', type=str, default="facebook/bart-large-cnn",
+                        help='Model to use for generating concise answers')
     
     args = parser.parse_args()
     
     try:
-        print("Initializing MedicalQASummarizer...")
-        processor = MedicalQASummarizer(max_words=args.max_words)
-        
+        # Load dataset
         print("Loading dataset...")
         dataset = load_dataset('ruslanmv/ai-medical-chatbot', split='train')
-        original_size = len(dataset)
-        print(f"Loaded {original_size} samples")
+
+        dataset = dataset.select(range(20000))
         
-        start_index = 0
-        end_idx = original_size
-        total_samples = end_idx - start_index
-        
-        print(f"Processing {total_samples} samples...")
-        
-        all_results = []
-        
-        with tqdm(total=total_samples, desc="Processing dataset") as pbar:
-            batch_num = 1
-            for start in range(start_index, end_idx, args.batch_size):
-                batch_end = min(start + args.batch_size, end_idx)
-                
-                df_batch, _ = process_batch(
-                    dataset=dataset,
-                    processor=processor,
-                    start_idx=start,
-                    batch_size=args.batch_size,
-                    output_dir=args.output_dir,
-                    batch_num=batch_num
-                )
-                
-                if not df_batch.empty:
-                    all_results.append(df_batch)
-                
-                pbar.update(batch_end - start)
-                batch_num += 1
-        
-        if all_results:
-            df_final = pd.concat(all_results, ignore_index=True)
-            
-            answered_mask = (df_final['concise_answer'] != '[No answer could be generated]') & \
-                            (~df_final['concise_answer'].str.contains('revert back', case=False, na=False))
-            df_final_answered = df_final[answered_mask]
-            
-            final_output_file = os.path.join(args.output_dir, 'medical_qa_final.csv')
-            df_final_answered.to_csv(final_output_file, index=False)
-            
-            for batch_file in os.listdir(args.output_dir):
-                if batch_file.startswith('medical_qa_batch_') and batch_file.endswith('.csv'):
-                    try:
-                        os.remove(os.path.join(args.output_dir, batch_file))
-                    except Exception as e:
-                        print(f"Could not delete batch file {batch_file}: {e}")
-            
-            print("\nProcessing complete!")
-            print(f"Original dataset size: {original_size}")
-            print(f"Records with generated answers: {len(df_final_answered)}")
-            print(f"Final results saved to: {final_output_file}")
-        
-        else:
-            print("Warning: No results were generated.")
+        # Process dataset
+        df = process_medical_qa(
+            dataset=dataset,
+            model_name=args.model_name,
+            output_dir=args.output_dir,
+            batch_size=args.batch_size
+        )
         
     except Exception as e:
         print(f"An error occurred: {str(e)}")

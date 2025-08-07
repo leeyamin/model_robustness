@@ -1,0 +1,33 @@
+# @package _global_
+defaults:
+  - _self_
+
+model:
+  audited_llm: "TheBloke/Llama-2-7B-Chat-GGML"
+  probe_llms:
+    - "TheBloke/Mistral-7B-Instruct-v0.1-GGUF"
+    - "TheBloke/zephyr-7B-beta-GGUF"
+  embedding_llm: "all-MiniLM-L6-v2"
+
+parameters:
+  num_probes: 2
+  context_length: 1024
+  num_questions: 2
+  probe_similarity_threshold: 0.75
+
+domain:
+  name: "medical"
+  processor_script: "medical_qa_processor.py"
+  data_path: "data/processed/medical_qa/medical_qa_processed.csv"
+
+generic_answers:
+  answers:
+    - "I don't know."
+    - "I'm not sure."
+    - "As an AI language model, I cannot answer that."
+    - "Sorry, I do not have that information."
+    - "I'm unable to provide that information."
+    - "That's a good question."
+
+environment:
+  hf_hub_disable_progress_bars: true 

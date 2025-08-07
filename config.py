@@ -1,48 +1,72 @@
-import os
+from dataclasses import dataclass, field
+from typing import List
+from hydra.core.config_store import ConfigStore
 
-# Model Configurations
-MODEL_1_NAME = "TheBloke/Llama-2-7B-Chat-GGML"
-PROBE_LLM_NAMES = [
-    "TheBloke/Mistral-7B-Instruct-v0.1-GGUF",
-    "TheBloke/Llama-2-7B-Chat-GGML"
-]
-EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
+@dataclass
+class ModelConfig:
+    audited_llm: str = field(
+        metadata={"help": "Name of the main model to be evaluated for robustness"}
+    )
+    probe_llms: List[str] = field(
+        metadata={"help": "List of LLM models used for generating probe questions"}
+    )
+    embedding_llm: str = field(
+        metadata={"help": "Model used for computing semantic similarities between texts"}
+    )
 
-# Execution Parameters
-NUM_PROBES = 5
-CONTEXT_LENGTH = 1024
-SEED = 42
-NUM_QUESTIONS = 3
+@dataclass
+class ParametersConfig:
+    num_probes: int = field(
+        metadata={"help": "Number of probe questions to generate per LLM"}
+    )
+    context_length: int = field(
+        metadata={"help": "Maximum context length for model inputs"}
+    )
+    num_questions: int = field(
+        metadata={"help": "Number of questions to process from the dataset"}
+    )
+    probe_similarity_threshold: float = field(
+        metadata={"help": "Minimum similarity threshold for accepting generated probes"}
+    )
 
-# Data paths
-MEDICAL_QA_PATH = "data/processed/medical_qa/medical_qa_final.csv"
+@dataclass
+class PathsConfig:
+    """Configuration for file paths."""
+    
+    medical_qa_path: str = field(
+        metadata={"help": "Path to the processed medical QA dataset CSV file"}
+    )
 
-POC_DATA = {
-    "questions": [
-        "What are the symptoms of a heart attack?",
-        "What is the recommended treatment for type 2 diabetes?",
-        "How can one prevent the flu?",
-        "What are the side effects of penicillin?",
-        "What is the difference between a virus and a bacteria?"
-    ],
-    "answers": [
-        "Symptoms of a heart attack include chest pain, shortness of breath, and discomfort in other areas of the upper body.",
-        "Treatment for type 2 diabetes typically includes lifestyle changes like diet and exercise, and may also involve medications such as metformin.",
-        "The flu can be prevented by getting an annual flu shot, washing hands frequently, and avoiding close contact with sick people.",
-        "Common side effects of penicillin include nausea, diarrhea, and allergic reactions such as rashes.",
-        "A virus is a non-living infectious agent that replicates inside living cells, while a bacterium is a single-celled living microorganism."
-    ]
-}
+@dataclass
+class GenericAnswersConfig:
+    answers: List[str] = field(
+        metadata={"help": "List of generic answer patterns to filter out from evaluation"}
+    )
 
-# Answer Filtering
-GENERIC_ANSWERS = [
-    "I don't know.",
-    "I'm not sure.",
-    "As an AI language model, I cannot answer that.",
-    "Sorry, I do not have that information.",
-    "I'm unable to provide that information.",
-    "That's a good question."
-]
+@dataclass
+class EnvironmentConfig:
+    hf_hub_disable_progress_bars: bool = field(
+        metadata={"help": "Whether to disable Hugging Face progress bar outputs"}
+    )
 
-# Environment setup
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" 
+@dataclass
+class Config:
+    model: ModelConfig = field(
+        metadata={"help": "Model-related configuration"}
+    )
+    parameters: ParametersConfig = field(
+        metadata={"help": "Runtime parameters for evaluation"}
+    )
+    paths: PathsConfig = field(
+        metadata={"help": "File path configurations"}
+    )
+    generic_answers: GenericAnswersConfig = field(
+        metadata={"help": "Configuration for filtering generic answers"}
+    )
+    environment: EnvironmentConfig = field(
+        metadata={"help": "Environment and logging settings"}
+    )
+
+def register_config():
+    cs = ConfigStore.instance()
+    cs.store(name="base_config", node=Config) 
