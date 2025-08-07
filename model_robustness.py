@@ -41,9 +41,15 @@ def load_domain_questions(cfg: DictConfig, num_questions=None):
     
     if not os.path.exists(data_path):
         print(f"{domain_name.title()} QA CSV not found at {data_path}. Running {processor_script}...")
-        subprocess.run(["python", processor_script], check=True)
+        try:
+            subprocess.run(["python", processor_script], check=True)
+        except Exception as e:
+            print(f"Failed to run processor script: {e}")
+            return [], []
+        
         if not os.path.exists(data_path):
-            raise FileNotFoundError(f"Failed to generate {data_path}")
+            print(f"Failed to generate {data_path}")
+            return [], []
 
     df = pd.read_csv(data_path, nrows=num_questions)
     questions = df['question'].tolist()

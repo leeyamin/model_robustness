@@ -17,7 +17,7 @@ parameters:
 
 domain:
   name: "medical"
-  processor_script: "medical_qa_processor.py"
+  processor_script: "data/processors/medical_qa_processor.py"
   data_path: "data/processed/medical_qa/medical_qa_processed.csv"
 
 generic_answers:
