@@ -1,0 +1,5 @@
+outputs/*
+.name
+*.xml
+*.iml
+.idea/
