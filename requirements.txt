@@ -4,8 +4,8 @@ nltk
 torch
 langchain-community
 langchain-core
+langchain-huggingface
 sentence-transformers
-scikit-learn
 tqdm
 python-dotenv
 datasets
@@ -13,4 +13,4 @@ transformers
 ctransformers
 hydra-core
 omegaconf
-pyyaml
+ragas

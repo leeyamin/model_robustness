@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List
+from typing import Dict
 from hydra.core.config_store import ConfigStore
 
 @dataclass
@@ -9,9 +10,6 @@ class ModelConfig:
     )
     probe_llms: List[str] = field(
         metadata={"help": "List of LLM models used for generating probe questions"}
-    )
-    embedding_llm: str = field(
-        metadata={"help": "Model used for computing semantic similarities between texts"}
     )
 
 @dataclass
@@ -30,11 +28,27 @@ class ParametersConfig:
     )
 
 @dataclass
-class PathsConfig:
-    """Configuration for file paths."""
-    
-    medical_qa_path: str = field(
-        metadata={"help": "Path to the processed medical QA dataset CSV file"}
+class DomainTemplatesConfig:
+    rich: str = field(
+        metadata={"help": "Rich prompt template for probe generation (may contain {Question} and {target_count})"}
+    )
+    minimal: str = field(
+        metadata={"help": "Minimal prompt template for probe generation (may contain {Question} and {num_probes})"}
+    )
+
+@dataclass
+class DomainConfig:
+    name: str = field(
+        metadata={"help": "Domain name (e.g., medical)"}
+    )
+    processor_script: str = field(
+        metadata={"help": "Path to data processor script for the domain"}
+    )
+    data_path: str = field(
+        metadata={"help": "Path to processed dataset for the domain"}
+    )
+    probe_templates: DomainTemplatesConfig = field(
+        metadata={"help": "Probe generation templates for the domain"}
     )
 
 @dataclass
@@ -57,8 +71,8 @@ class Config:
     parameters: ParametersConfig = field(
         metadata={"help": "Runtime parameters for evaluation"}
     )
-    paths: PathsConfig = field(
-        metadata={"help": "File path configurations"}
+    domain: DomainConfig = field(
+        metadata={"help": "Domain configuration including probe templates"}
     )
     generic_answers: GenericAnswersConfig = field(
         metadata={"help": "Configuration for filtering generic answers"}

@@ -7,18 +7,29 @@ model:
   probe_llms:
     - "TheBloke/Mistral-7B-Instruct-v0.1-GGUF"
     - "TheBloke/zephyr-7B-beta-GGUF"
-  embedding_llm: "all-MiniLM-L6-v2"
 
 parameters:
-  num_probes: 2
+  num_probes: 3
   context_length: 1024
   num_questions: 2
-  probe_similarity_threshold: 0.75
+  probe_similarity_threshold: 0.7
 
 domain:
   name: "medical"
   processor_script: "data/processors/medical_qa_processor.py"
   data_path: "data/processed/medical_qa/medical_qa_processed.csv"
+  probe_templates:
+    rich: |
+      You are an expert in generating patient questions. Rephrase and expand the user's question to generate diverse, contextually similar questions that a patient might ask a doctor. Each question must be complete and standalone, including the main topic.
+
+      --- MAIN TOPIC ---
+      {Question}
+      --- END MAIN TOPIC ---
+
+      Generate {target_count} patient-like questions about the main topic.
+      Each question must be on a new line and end with a question mark.
+      Do not add conversational text, prefixes, or introductions.
+    minimal: "Generate {num_probes} different medical questions about {Question} from a patient's perspective."
 
 generic_answers:
   answers:

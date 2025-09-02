@@ -1,5 +1,14 @@
 # Auditing LLMs Robustness
 
+## TL;DR
+This repo audits how consistently an LLM answers the same question when it’s phrased in different ways. It generates probe questions, collects the model’s answers, and scores both consistency (robustness) and correctness (accuracy). It’s domain-agnostic by design; the included PoC showcases a medical QA dataset.
+
+- **What you get**: Robustness and accuracy scores per question and per probe set.
+- **How it works**: Rephrase the original question into multiple semantically similar probes, get answers from the audited model, then measure answer similarity and accuracy with Ragas-based metrics.
+
+
+## Introduction
+
 As Large Language Models (LLMs) continue to integrate deeply into our daily lives, 
 ensuring their **robustness**, **reliability**, and **consistency** is crucial.
 This project provides a comprehensive framework for auditing the robustness of LLMs. 
@@ -41,14 +50,16 @@ rather than relying on a single probing model.
 This enhancement addresses the potential for bias and provides a more robust and unbiased evaluation of the model under audit. 
 The framework is agnostic to the specific probing LLMs used, allowing for the selection of multiple suitable language models 
 to collaboratively create these variations while strictly preserving the core meaning of the original question. 
-Within this enhanced framework, each generated probe undergoes rigorous validation via semantic similarity checks to ensure fidelity to the original intent. 
+Within this enhanced framework, each generated probe undergoes rigorous validation via semantic similarity checks to ensure fidelity to the original intent
+[PoC note: filtering is disabled due to local model constraints].
 Additionally, to maximize coverage and prevent redundancy, this system applies clustering techniques to select the most diverse and representative set of probes. 
 This comprehensive approach is critical for effectively uncovering subtle inconsistencies in the audited model's answers across different but semantically equivalent phrasings.
 
 ### Answer Analysis Engine
 The Answer Analysis Engine systematically processes and evaluates the answers provided by the audited model. 
 The system processes these answers through a series of rigorous quality checks. 
-Initially, it filters out uninformative or generic responses (e.g., "I don't know," "I can't help with that") using a predefined exclusion list. 
+Initially, it filters out uninformative or generic responses (e.g., "I don't know," "I can't help with that") using a predefined exclusion list 
+[PoC note: filtering is disabled due to local model constraints].
 This is a key enhancement to ensure meaningful robustness scores: by removing such trivial answers, the framework prevents 
 the audited model from achieving high consistency based on consistently irrelevant outputs.
 

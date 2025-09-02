@@ -19,22 +19,6 @@ def count_tokens(text):
     return len(text.split())
 
 
-def preprocess_text(text):
-    """Clean text for consistent semantic similarity evaluation."""
-    if not text:
-        return ""
-    text = str(text)
-    text = ' '.join(text.split()).lower()
-    fillers = [
-        "according to the context", "based on the information provided",
-        "the text states that", "it is mentioned that", "as described",
-        "in summary", "to summarize", "in conclusion"
-    ]
-    for filler in fillers:
-        text = text.replace(filler, '')
-    return text.strip()
-
-
 def truncate_prompt_to_fit(prompt_template_str, user_input, max_context_tokens, placeholder_key="Question"):
     """Truncate user input to fit within the model context window."""
     dummy_input = "PLACEHOLDER"
@@ -126,9 +110,8 @@ def print_robustness_summary(results, model_name):
 
 def print_detailed_results(results):
     """Print detailed per-prompt robustness results."""
-    if not results.get('prompt_results'):
+    if not results.get('prompt_results') or any(not pr for pr in results['prompt_results']):
         print("\nNo detailed results available.")
-        return
     
     print(f"\n{'-'*50}")
     print("DETAILED RESULTS BY PROMPT")
