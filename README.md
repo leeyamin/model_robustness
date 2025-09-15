@@ -6,6 +6,8 @@ This repo audits how consistently an LLM answers the same question when it’s p
 - **What you get**: Robustness and accuracy scores per question and per probe set.
 - **How it works**: Rephrase the original question into multiple semantically similar probes, get answers from the audited model, then measure answer similarity and accuracy with Ragas-based metrics.
 
+For quick setup and running instructions, see [howto.md](howto.md).
+
 
 ## Introduction
 
